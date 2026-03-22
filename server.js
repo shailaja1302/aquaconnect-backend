@@ -8,7 +8,11 @@ const app = express();
 
 // Middleware
 app.use(cors({
-  origin: "http://localhost:3000",
+  origin: [
+    "http://localhost:3000",
+    "https://aquaconnect-frontend.vercel.app",
+    "https://aquaconnect-frontend-shailaja1302.vercel.app"
+  ],
   credentials: true
 }));
 app.use(express.json());
