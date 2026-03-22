@@ -10,8 +10,7 @@ const app = express();
 app.use(cors({
   origin: [
     "http://localhost:3000",
-    "https://aquaconnect-frontend.vercel.app",
-    "https://aquaconnect-frontend-shailaja1302.vercel.app"
+    "https://aquaconnect-frontend-shailaja1302s-projects.vercel.app"
   ],
   credentials: true
 }));
