@@ -45,7 +45,6 @@ const pool = new Pool({
 
 const syncDatabase = async () => {
   try {
-    // Ensure the users table exists with all required columns
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -59,7 +58,6 @@ const syncDatabase = async () => {
       );
     `);
 
-    // Ensure the alerts table exists
     await pool.query(`
       CREATE TABLE IF NOT EXISTS emergency_alerts (
         id SERIAL PRIMARY KEY,
@@ -98,22 +96,20 @@ app.post('/api/auth/register', async (req, res) => {
   const { name, phone, email, password, area, aadhaar_number } = req.body;
 
   try {
-    if (!phone || !password) {
-      return res.status(400).json({ message: "Phone and Password are required." });
+    const cleanPhone = String(phone || "").trim();
+    const cleanEmail = email ? String(email).trim().toLowerCase() : null;
+
+    if (!cleanPhone || !password) {
+      return res.status(400).json({ message: "Phone and password are required." });
     }
 
-    const cleanPhone = phone.toString().trim();
-    const cleanEmail = email ? email.toString().trim().toLowerCase() : null;
-
-    // Check if phone already exists
-    const phoneCheck = await pool.query('SELECT * FROM users WHERE phone = $1', [cleanPhone]);
+    const phoneCheck = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
     if (phoneCheck.rows.length > 0) {
       return res.status(400).json({ message: "This mobile number is already registered." });
     }
 
-    // Insert new user
     const result = await pool.query(
-      'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, phone, area',
+      'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, phone',
       [name, cleanPhone, cleanEmail, password, area, aadhaar_number]
     );
 
@@ -128,50 +124,49 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Login API - THE FINAL FIX
+// Login API - LOGGING & TRIMMING REINFORCED
 app.post('/api/auth/login', async (req, res) => {
   try {
-    console.log("Received login request:", req.body);
+    // These logs help us see exactly what the frontend is sending
+    const incomingPhone = req.body.phone;
+    const incomingPass = req.body.password;
+    console.log(`Login Attempt -> Phone: [${incomingPhone}], Pass: [${incomingPass}]`);
 
-    const { phone, password } = req.body;
-
-    // 1. Basic validation
-    if (!phone || !password) {
-      return res.status(400).json({ message: "Please enter both phone and password." });
+    if (incomingPhone === undefined || incomingPass === undefined) {
+      return res.status(400).json({ message: "Data missing from request. Check Frontend keys." });
     }
 
-    const cleanPhone = phone.toString().trim();
-    const rawPassword = password.toString().trim();
+    const cleanPhone = String(incomingPhone).trim();
+    const cleanPass = String(incomingPass).trim();
 
-    // 2. Query the user
+    // Query using TRIM to ensure we ignore any ghost spaces in the DB
     const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
 
     if (result.rows.length === 0) {
+      console.log(`User not found for phone: [${cleanPhone}]`);
       return res.status(401).json({ message: "Account not found." });
     }
 
     const user = result.rows;
+    const dbPassword = String(user.password || "").trim();
 
-    // 3. NULL-SAFE PASSWORD CHECK (This prevents the 'toString' crash)
-    if (!user.password || user.password.toString().trim() !== rawPassword) {
+    console.log(`Comparison -> DB: [${dbPassword}], Input: [${cleanPass}]`);
+
+    if (dbPassword !== cleanPass) {
       return res.status(401).json({ message: "Incorrect password." });
     }
 
-    // 4. Successful Login
     res.status(200).json({
       message: "Login successful",
       user: {
         id: user.id,
         name: user.name,
-        phone: user.phone,
-        email: user.email,
-        area: user.area
+        phone: user.phone
       },
       token: "dummy-token-123"
     });
 
   } catch (err) {
-    // This catches everything else and stops the server from crashing
     console.error("Critical Login Error:", err.message);
     res.status(500).json({ message: "Internal Server Error." });
   }
