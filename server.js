@@ -85,11 +85,15 @@ app.get('/', (req, res) => {
 
 // Registration API
 app.post('/api/auth/register', async (req, res) => {
-  const { name, phone, email, password, area, aadhaar_number } = req.body;
+  let { name, phone, email, password, area, aadhaar_number } = req.body;
 
   try {
+    // Basic validation to ensure phone is treated as a string
+    const cleanPhone = phone ? phone.toString().trim() : '';
+    const cleanEmail = email ? email.toString().trim().toLowerCase() : '';
+
     // Check if user already exists
-    const checkUser = await pool.query('SELECT * FROM users WHERE phone = $1 OR email = $2', [phone, email]);
+    const checkUser = await pool.query('SELECT * FROM users WHERE phone = $1 OR email = $2', [cleanPhone, cleanEmail]);
     if (checkUser.rows.length > 0) {
       return res.status(400).json({ message: "User with this phone or email already exists" });
     }
@@ -97,12 +101,12 @@ app.post('/api/auth/register', async (req, res) => {
     // Insert new user
     const result = await pool.query(
       'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, phone, area',
-      [name, phone, email, password, area, aadhaar_number]
+      [name, cleanPhone, cleanEmail, password, area, aadhaar_number]
     );
 
     res.status(201).json({
       message: "Registration Successful",
-      user: result.rows, // Returning the object, not an array
+      user: result.rows,
       token: "dummy-token-123" 
     });
   } catch (err) {
@@ -111,13 +115,21 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Login API
+// Login API - SAFE VERSION
 app.post('/api/auth/login', async (req, res) => {
-  const { phone, password } = req.body;
+  let { phone, password } = req.body;
+
+  if (!phone || !password) {
+    return res.status(400).json({ message: "Phone and password are required" });
+  }
+
+  // Ensure inputs are clean strings
+  const cleanPhone = phone.toString().trim();
+  const rawPassword = password.toString();
 
   try {
-    // 1. Check if the user exists
-    const result = await pool.query('SELECT * FROM users WHERE phone = $1', [phone]);
+    // 1. Find user by trimmed phone number
+    const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
 
     if (result.rows.length === 0) {
       return res.status(401).json({ message: "Invalid phone number or password" });
@@ -125,12 +137,12 @@ app.post('/api/auth/login', async (req, res) => {
 
     const user = result.rows;
 
-    // 2. Compare passwords (Plain text for now)
-    if (user.password !== password) {
+    // 2. Compare passwords (Note: Using .trim() on DB side just in case)
+    if (user.password.toString().trim() !== rawPassword.trim()) {
       return res.status(401).json({ message: "Invalid phone number or password" });
     }
 
-    // 3. Successful login - Send back user data formatted for your AuthContext
+    // 3. Successful login
     res.status(200).json({
       message: "Login successful",
       user: {
