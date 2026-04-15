@@ -45,7 +45,6 @@ const pool = new Pool({
 
 const syncDatabase = async () => {
   try {
-    // Users Table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -59,7 +58,6 @@ const syncDatabase = async () => {
       );
     `);
 
-    // Emergency Alerts Table (NEW)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS emergency_alerts (
         id SERIAL PRIMARY KEY,
@@ -68,8 +66,7 @@ const syncDatabase = async () => {
         location VARCHAR(100),
         severity VARCHAR(20), 
         alert_type VARCHAR(50), 
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        expires_at TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
     
@@ -94,7 +91,7 @@ app.get('/', (req, res) => {
   res.send('AquaConnect API is running!');
 });
 
-// Registration API
+// Registration API - WITH SPLIT CHECKS
 app.post('/api/auth/register', async (req, res) => {
   let { name, phone, email, password, area, aadhaar_number } = req.body;
 
@@ -102,11 +99,19 @@ app.post('/api/auth/register', async (req, res) => {
     const cleanPhone = phone ? phone.toString().trim() : '';
     const cleanEmail = email ? email.toString().trim().toLowerCase() : '';
 
-    const checkUser = await pool.query('SELECT * FROM users WHERE phone = $1 OR email = $2', [cleanPhone, cleanEmail]);
-    if (checkUser.rows.length > 0) {
-      return res.status(400).json({ message: "User with this phone or email already exists" });
+    // Check Phone Separately
+    const phoneCheck = await pool.query('SELECT * FROM users WHERE phone = $1', [cleanPhone]);
+    if (phoneCheck.rows.length > 0) {
+      return res.status(400).json({ message: "This mobile number is already registered. Try logging in." });
     }
 
+    // Check Email Separately
+    const emailCheck = await pool.query('SELECT * FROM users WHERE email = $1', [cleanEmail]);
+    if (emailCheck.rows.length > 0) {
+      return res.status(400).json({ message: "This email is already registered to another account." });
+    }
+
+    // Insert new user
     const result = await pool.query(
       'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, phone, area',
       [name, cleanPhone, cleanEmail, password, area, aadhaar_number]
@@ -123,7 +128,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Login API (SAFE VERSION - Handles 'undefined' errors)
+// Login API - SAFE VERSION
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { phone = "", password = "" } = req.body;
@@ -138,13 +143,13 @@ app.post('/api/auth/login', async (req, res) => {
     const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
 
     if (result.rows.length === 0) {
-      return res.status(401).json({ message: "Invalid phone number or password" });
+      return res.status(401).json({ message: "No account found with this phone number." });
     }
 
     const user = result.rows;
 
     if (user.password.toString().trim() !== rawPassword) {
-      return res.status(401).json({ message: "Invalid phone number or password" });
+      return res.status(401).json({ message: "Incorrect password. Please try again." });
     }
 
     res.status(200).json({
@@ -165,20 +170,15 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Fetch Emergency Alerts API
 app.get('/api/alerts/active', async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT * FROM emergency_alerts 
-      ORDER BY created_at DESC
-    `);
+    const result = await pool.query('SELECT * FROM emergency_alerts ORDER BY created_at DESC');
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 5. START SERVER
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
