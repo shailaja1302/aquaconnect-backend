@@ -77,6 +77,8 @@ pool.connect((err) => {
 });
 
 // 4. ROUTES
+
+// Root Route
 app.get('/', (req, res) => {
   res.send('AquaConnect API is running and synchronized!');
 });
@@ -94,17 +96,55 @@ app.post('/api/auth/register', async (req, res) => {
 
     // Insert new user
     const result = await pool.query(
-      'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email',
+      'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, phone, area',
       [name, phone, email, password, area, aadhaar_number]
     );
 
     res.status(201).json({
       message: "Registration Successful",
-      user: result.rows,
+      user: result.rows, // Returning the object, not an array
       token: "dummy-token-123" 
     });
   } catch (err) {
     console.error("Registration Error:", err.message);
+    res.status(500).json({ message: "Database Error: " + err.message });
+  }
+});
+
+// Login API
+app.post('/api/auth/login', async (req, res) => {
+  const { phone, password } = req.body;
+
+  try {
+    // 1. Check if the user exists
+    const result = await pool.query('SELECT * FROM users WHERE phone = $1', [phone]);
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ message: "Invalid phone number or password" });
+    }
+
+    const user = result.rows;
+
+    // 2. Compare passwords (Plain text for now)
+    if (user.password !== password) {
+      return res.status(401).json({ message: "Invalid phone number or password" });
+    }
+
+    // 3. Successful login - Send back user data formatted for your AuthContext
+    res.status(200).json({
+      message: "Login successful",
+      user: {
+        id: user.id,
+        name: user.name,
+        phone: user.phone,
+        email: user.email,
+        area: user.area
+      },
+      token: "dummy-token-123"
+    });
+
+  } catch (err) {
+    console.error("Login Error:", err.message);
     res.status(500).json({ message: "Database Error: " + err.message });
   }
 });
