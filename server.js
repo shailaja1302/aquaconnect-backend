@@ -37,7 +37,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// 3. DATABASE CONNECTION & COLUMN SYNCHRONIZATION
+// 3. DATABASE CONNECTION & SCHEMA SYNC
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -45,21 +45,33 @@ const pool = new Pool({
 
 const syncDatabase = async () => {
   try {
-    // Ensure the base table exists
+    // Users Table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         phone VARCHAR(20) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
+        email VARCHAR(255) UNIQUE,
+        area VARCHAR(100),
+        aadhaar_number VARCHAR(20) UNIQUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    // Forcefully add missing columns if they don't exist
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255) UNIQUE;`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS area VARCHAR(100);`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS aadhaar_number VARCHAR(20) UNIQUE;`);
+    // Emergency Alerts Table (NEW)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS emergency_alerts (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        location VARCHAR(100),
+        severity VARCHAR(20), 
+        alert_type VARCHAR(50), 
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP
+      );
+    `);
     
     console.log("✅ Database schema synchronized successfully");
   } catch (err) {
@@ -78,9 +90,8 @@ pool.connect((err) => {
 
 // 4. ROUTES
 
-// Root Route
 app.get('/', (req, res) => {
-  res.send('AquaConnect API is running and synchronized!');
+  res.send('AquaConnect API is running!');
 });
 
 // Registration API
@@ -88,17 +99,14 @@ app.post('/api/auth/register', async (req, res) => {
   let { name, phone, email, password, area, aadhaar_number } = req.body;
 
   try {
-    // Basic validation to ensure phone is treated as a string
     const cleanPhone = phone ? phone.toString().trim() : '';
     const cleanEmail = email ? email.toString().trim().toLowerCase() : '';
 
-    // Check if user already exists
     const checkUser = await pool.query('SELECT * FROM users WHERE phone = $1 OR email = $2', [cleanPhone, cleanEmail]);
     if (checkUser.rows.length > 0) {
       return res.status(400).json({ message: "User with this phone or email already exists" });
     }
 
-    // Insert new user
     const result = await pool.query(
       'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, phone, area',
       [name, cleanPhone, cleanEmail, password, area, aadhaar_number]
@@ -115,20 +123,18 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Login API - SAFE VERSION
+// Login API (SAFE VERSION - Handles 'undefined' errors)
 app.post('/api/auth/login', async (req, res) => {
-  let { phone, password } = req.body;
-
-  if (!phone || !password) {
-    return res.status(400).json({ message: "Phone and password are required" });
-  }
-
-  // Ensure inputs are clean strings
-  const cleanPhone = phone.toString().trim();
-  const rawPassword = password.toString();
-
   try {
-    // 1. Find user by trimmed phone number
+    const { phone = "", password = "" } = req.body;
+
+    if (!phone || !password) {
+      return res.status(400).json({ message: "Please enter both mobile number and password." });
+    }
+
+    const cleanPhone = phone.toString().trim();
+    const rawPassword = password.toString().trim();
+
     const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
 
     if (result.rows.length === 0) {
@@ -137,12 +143,10 @@ app.post('/api/auth/login', async (req, res) => {
 
     const user = result.rows;
 
-    // 2. Compare passwords (Note: Using .trim() on DB side just in case)
-    if (user.password.toString().trim() !== rawPassword.trim()) {
+    if (user.password.toString().trim() !== rawPassword) {
       return res.status(401).json({ message: "Invalid phone number or password" });
     }
 
-    // 3. Successful login
     res.status(200).json({
       message: "Login successful",
       user: {
@@ -157,7 +161,20 @@ app.post('/api/auth/login', async (req, res) => {
 
   } catch (err) {
     console.error("Login Error:", err.message);
-    res.status(500).json({ message: "Database Error: " + err.message });
+    res.status(500).json({ message: "Server Error: " + err.message });
+  }
+});
+
+// Fetch Emergency Alerts API
+app.get('/api/alerts/active', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM emergency_alerts 
+      ORDER BY created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
