@@ -45,6 +45,7 @@ const pool = new Pool({
 
 const syncDatabase = async () => {
   try {
+    // Ensure the users table exists with all required columns
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -58,6 +59,7 @@ const syncDatabase = async () => {
       );
     `);
 
+    // Ensure the alerts table exists
     await pool.query(`
       CREATE TABLE IF NOT EXISTS emergency_alerts (
         id SERIAL PRIMARY KEY,
@@ -96,26 +98,20 @@ app.post('/api/auth/register', async (req, res) => {
   const { name, phone, email, password, area, aadhaar_number } = req.body;
 
   try {
-    // Safety check for empty inputs
-    if (!phone || !email) {
-      return res.status(400).json({ message: "Phone and Email are required." });
+    if (!phone || !password) {
+      return res.status(400).json({ message: "Phone and Password are required." });
     }
 
     const cleanPhone = phone.toString().trim();
-    const cleanEmail = email.toString().trim().toLowerCase();
+    const cleanEmail = email ? email.toString().trim().toLowerCase() : null;
 
-    // Check Phone
+    // Check if phone already exists
     const phoneCheck = await pool.query('SELECT * FROM users WHERE phone = $1', [cleanPhone]);
     if (phoneCheck.rows.length > 0) {
-      return res.status(400).json({ message: "Mobile number already registered." });
+      return res.status(400).json({ message: "This mobile number is already registered." });
     }
 
-    // Check Email
-    const emailCheck = await pool.query('SELECT * FROM users WHERE email = $1', [cleanEmail]);
-    if (emailCheck.rows.length > 0) {
-      return res.status(400).json({ message: "Email already registered." });
-    }
-
+    // Insert new user
     const result = await pool.query(
       'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, phone, area',
       [name, cleanPhone, cleanEmail, password, area, aadhaar_number]
@@ -128,29 +124,26 @@ app.post('/api/auth/register', async (req, res) => {
     });
   } catch (err) {
     console.error("Registration Error:", err.message);
-    res.status(500).json({ message: "Server Error during registration." });
+    res.status(500).json({ message: "Database error during registration." });
   }
 });
 
-// Login API - CRASH-PROOF VERSION
+// Login API - THE FINAL FIX
 app.post('/api/auth/login', async (req, res) => {
   try {
-    // Log what the server actually receives
     console.log("Received login request:", req.body);
 
-    const phone = req.body.phone;
-    const password = req.body.password;
+    const { phone, password } = req.body;
 
-    // VALIDATION BEFORE PROCESSING
-    if (phone === undefined || phone === null || password === undefined || password === null) {
-      return res.status(400).json({ 
-        message: "Missing credentials. Check if your frontend keys match 'phone' and 'password'." 
-      });
+    // 1. Basic validation
+    if (!phone || !password) {
+      return res.status(400).json({ message: "Please enter both phone and password." });
     }
 
     const cleanPhone = phone.toString().trim();
     const rawPassword = password.toString().trim();
 
+    // 2. Query the user
     const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
 
     if (result.rows.length === 0) {
@@ -159,10 +152,12 @@ app.post('/api/auth/login', async (req, res) => {
 
     const user = result.rows;
 
-    if (user.password.toString().trim() !== rawPassword) {
+    // 3. NULL-SAFE PASSWORD CHECK (This prevents the 'toString' crash)
+    if (!user.password || user.password.toString().trim() !== rawPassword) {
       return res.status(401).json({ message: "Incorrect password." });
     }
 
+    // 4. Successful Login
     res.status(200).json({
       message: "Login successful",
       user: {
@@ -176,6 +171,7 @@ app.post('/api/auth/login', async (req, res) => {
     });
 
   } catch (err) {
+    // This catches everything else and stops the server from crashing
     console.error("Critical Login Error:", err.message);
     res.status(500).json({ message: "Internal Server Error." });
   }
