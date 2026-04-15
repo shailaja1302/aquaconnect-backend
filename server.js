@@ -26,6 +26,7 @@ app.use(cors({
     if (isAllowed) {
       callback(null, true);
     } else {
+      console.log("CORS Blocked Origin:", origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -56,14 +57,29 @@ const syncDatabase = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log("✅ Database schema synchronized");
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS emergency_alerts (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        location VARCHAR(100),
+        severity VARCHAR(20), 
+        alert_type VARCHAR(50), 
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    
+    console.log("✅ Database schema synchronized successfully");
   } catch (err) {
     console.error("❌ Database sync error:", err.message);
   }
 };
 
 pool.connect((err) => {
-  if (!err) {
+  if (err) {
+    console.error('❌ Database connection error:', err.stack);
+  } else {
     console.log('✅ Connected to Render PostgreSQL');
     syncDatabase(); 
   }
@@ -75,75 +91,93 @@ app.get('/', (req, res) => {
   res.send('AquaConnect API is running!');
 });
 
-// REGISTRATION - Perfected with Trimming
+// Registration API
 app.post('/api/auth/register', async (req, res) => {
-  try {
-    const { name, phone, email, password, area, aadhaar_number } = req.body;
+  const { name, phone, email, password, area, aadhaar_number } = req.body;
 
-    if (!phone || !password) {
-      return res.status(400).json({ message: "Phone and Password are required." });
+  try {
+    const cleanPhone = String(phone || "").trim();
+    const cleanEmail = email ? String(email).trim().toLowerCase() : null;
+
+    if (!cleanPhone || !password) {
+      return res.status(400).json({ message: "Phone and password are required." });
     }
 
-    const cleanPhone = String(phone).trim();
-    const cleanPass = String(password).trim(); // Save it clean!
-
-    // Check if phone exists
     const phoneCheck = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
     if (phoneCheck.rows.length > 0) {
-      return res.status(400).json({ message: "Mobile number already registered." });
+      return res.status(400).json({ message: "This mobile number is already registered." });
     }
 
     const result = await pool.query(
       'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, phone',
-      [name, cleanPhone, email, cleanPass, area, aadhaar_number]
+      [name, cleanPhone, cleanEmail, password, area, aadhaar_number]
     );
 
-    res.status(201).json({ message: "Registration Successful", user: result.rows });
+    res.status(201).json({
+      message: "Registration Successful",
+      user: result.rows,
+      token: "dummy-token-123" 
+    });
   } catch (err) {
-    console.error("Reg Error:", err.message);
-    res.status(500).json({ message: "Registration failed." });
+    console.error("Registration Error:", err.message);
+    res.status(500).json({ message: "Database error during registration." });
   }
 });
 
-// LOGIN - Perfected with Loose Matching
+// Login API - LOGGING & TRIMMING REINFORCED
 app.post('/api/auth/login', async (req, res) => {
   try {
-    // 1. Get and Clean Input
-    const phoneInput = String(req.body.phone || "").trim();
-    const passInput = String(req.body.password || "").trim();
+    // These logs help us see exactly what the frontend is sending
+    const incomingPhone = req.body.phone;
+    const incomingPass = req.body.password;
+    console.log(`Login Attempt -> Phone: [${incomingPhone}], Pass: [${incomingPass}]`);
 
-    if (!phoneInput || !passInput) {
-      return res.status(400).json({ message: "Please provide both phone and password." });
+    if (incomingPhone === undefined || incomingPass === undefined) {
+      return res.status(400).json({ message: "Data missing from request. Check Frontend keys." });
     }
 
-    // 2. Find User
-    const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [phoneInput]);
+    const cleanPhone = String(incomingPhone).trim();
+    const cleanPass = String(incomingPass).trim();
+
+    // Query using TRIM to ensure we ignore any ghost spaces in the DB
+    const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
 
     if (result.rows.length === 0) {
+      console.log(`User not found for phone: [${cleanPhone}]`);
       return res.status(401).json({ message: "Account not found." });
     }
 
     const user = result.rows;
+    const dbPassword = String(user.password || "").trim();
 
-    // 3. LOOSE PASSWORD MATCH (Ignores all hidden white spaces)
-    const dbPass = String(user.password || "").replace(/\s+/g, '');
-    const cleanInputPass = passInput.replace(/\s+/g, '');
+    console.log(`Comparison -> DB: [${dbPassword}], Input: [${cleanPass}]`);
 
-    if (dbPass !== cleanInputPass) {
-      console.log(`Mismatch Detected! Input: [${cleanInputPass}], DB: [${dbPass}]`);
+    if (dbPassword !== cleanPass) {
       return res.status(401).json({ message: "Incorrect password." });
     }
 
-    // 4. Success
     res.status(200).json({
       message: "Login successful",
-      user: { id: user.id, name: user.name, phone: user.phone },
+      user: {
+        id: user.id,
+        name: user.name,
+        phone: user.phone
+      },
       token: "dummy-token-123"
     });
 
   } catch (err) {
-    console.error("Login Error:", err.message);
+    console.error("Critical Login Error:", err.message);
     res.status(500).json({ message: "Internal Server Error." });
+  }
+});
+
+app.get('/api/alerts/active', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM emergency_alerts ORDER BY created_at DESC');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
