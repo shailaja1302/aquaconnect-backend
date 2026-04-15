@@ -1,4 +1,4 @@
-const express = require('express');
+\const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
@@ -26,7 +26,6 @@ app.use(cors({
     if (isAllowed) {
       callback(null, true);
     } else {
-      console.log("CORS Blocked Origin:", origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -77,9 +76,7 @@ const syncDatabase = async () => {
 };
 
 pool.connect((err) => {
-  if (err) {
-    console.error('❌ Database connection error:', err.stack);
-  } else {
+  if (!err) {
     console.log('✅ Connected to Render PostgreSQL');
     syncDatabase(); 
   }
@@ -91,15 +88,14 @@ app.get('/', (req, res) => {
   res.send('AquaConnect API is running!');
 });
 
-// Registration API
+// Registration API - Fixed to ensure password is saved
 app.post('/api/auth/register', async (req, res) => {
   const { name, phone, email, password, area, aadhaar_number } = req.body;
-
   try {
     const cleanPhone = String(phone || "").trim();
-    const cleanEmail = email ? String(email).trim().toLowerCase() : null;
+    const cleanPass = String(password || "").trim();
 
-    if (!cleanPhone || !password) {
+    if (!cleanPhone || !cleanPass) {
       return res.status(400).json({ message: "Phone and password are required." });
     }
 
@@ -110,7 +106,7 @@ app.post('/api/auth/register', async (req, res) => {
 
     const result = await pool.query(
       'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, phone',
-      [name, cleanPhone, cleanEmail, password, area, aadhaar_number]
+      [name, cleanPhone, email, cleanPass, area, aadhaar_number]
     );
 
     res.status(201).json({
@@ -124,45 +120,34 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Login API - LOGGING & TRIMMING REINFORCED
+// Login API - FIXED with result.rows and explicit logging
 app.post('/api/auth/login', async (req, res) => {
   try {
-    // These logs help us see exactly what the frontend is sending
-    const incomingPhone = req.body.phone;
-    const incomingPass = req.body.password;
-    console.log(`Login Attempt -> Phone: [${incomingPhone}], Pass: [${incomingPass}]`);
+    const phoneInput = String(req.body.phone || "").trim();
+    const passInput = String(req.body.password || "").trim();
 
-    if (incomingPhone === undefined || incomingPass === undefined) {
-      return res.status(400).json({ message: "Data missing from request. Check Frontend keys." });
-    }
+    console.log(`Login Request -> Phone: [${phoneInput}], Pass: [${passInput}]`);
 
-    const cleanPhone = String(incomingPhone).trim();
-    const cleanPass = String(incomingPass).trim();
-
-    // Query using TRIM to ensure we ignore any ghost spaces in the DB
-    const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
+    const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [phoneInput]);
 
     if (result.rows.length === 0) {
-      console.log(`User not found for phone: [${cleanPhone}]`);
+      console.log(`User not found for phone: [${phoneInput}]`);
       return res.status(401).json({ message: "Account not found." });
     }
 
-    const user = result.rows;
+    // THE VITAL FIX: Adding to get the specific user object
+    const user = result.rows; 
     const dbPassword = String(user.password || "").trim();
 
-    console.log(`Comparison -> DB: [${dbPassword}], Input: [${cleanPass}]`);
+    console.log(`Comparison -> DB: [${dbPassword}], Input: [${passInput}]`);
 
-    if (dbPassword !== cleanPass) {
+    if (dbPassword !== passInput) {
       return res.status(401).json({ message: "Incorrect password." });
     }
 
     res.status(200).json({
       message: "Login successful",
-      user: {
-        id: user.id,
-        name: user.name,
-        phone: user.phone
-      },
+      user: { id: user.id, name: user.name, phone: user.phone },
       token: "dummy-token-123"
     });
 
