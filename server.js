@@ -2,16 +2,19 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
+const bcrypt = require('bcrypt');
 
 dotenv.config();
 const app = express();
+
+app.use(express.json());
 
 // 1. CORS CONFIGURATION
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
   'https://aquaconnect-frontend-jtz5flhj7-shailaja1302s-projects.vercel.app',
-  /\.vercel\.app$/ 
+  /\.vercel\.app$/
 ];
 
 app.use(cors({
@@ -21,18 +24,11 @@ app.use(cors({
       if (allowed instanceof RegExp) return allowed.test(origin);
       return allowed === origin;
     });
-    if (isAllowed) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+    if (isAllowed) callback(null, true);
+    else callback(new Error('Not allowed by CORS'));
   },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  credentials: true
 }));
-
-app.use(express.json());
 
 // 2. DATABASE
 const pool = new Pool({
@@ -40,6 +36,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
+// Create tables
 const syncDatabase = async () => {
   try {
     await pool.query(`
@@ -54,37 +51,42 @@ const syncDatabase = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS emergency_alerts (
         id SERIAL PRIMARY KEY,
         title VARCHAR(255) NOT NULL,
         description TEXT,
         location VARCHAR(100),
-        severity VARCHAR(20), 
-        alert_type VARCHAR(50), 
+        severity VARCHAR(20),
+        alert_type VARCHAR(50),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log("✅ Database schema synchronized");
+
+    console.log("✅ Database ready");
   } catch (err) {
-    console.error("❌ Database sync error:", err.message);
+    console.error("❌ DB Error:", err.message);
   }
 };
 
-pool.connect((err) => {
-  if (!err) {
+pool.connect()
+  .then(() => {
     console.log('✅ Connected to PostgreSQL');
-    syncDatabase(); 
-  }
-});
+    syncDatabase();
+  })
+  .catch(err => console.error("DB Connection Error:", err.message));
 
 // 3. ROUTES
-app.get('/', (req, res) => res.send('AquaConnect API is running!'));
+app.get('/', (req, res) => {
+  res.send('AquaConnect API is running!');
+});
 
-// REGISTRATION
+// ================= REGISTER =================
 app.post('/api/auth/register', async (req, res) => {
-  const { name, phone, email, password, area, aadhaar_number } = req.body;
   try {
+    const { name, phone, email, password, area, aadhaar_number } = req.body;
+
     const cleanPhone = String(phone || "").trim();
     const cleanPass = String(password || "").trim();
 
@@ -92,50 +94,66 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ message: "Phone and password required." });
     }
 
-    const phoneCheck = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
-    if (phoneCheck.rows.length > 0) {
+    // Check existing user
+    const existing = await pool.query(
+      'SELECT * FROM users WHERE TRIM(phone) = $1',
+      [cleanPhone]
+    );
+
+    if (existing.rows.length > 0) {
       return res.status(400).json({ message: "Mobile number already registered." });
     }
 
+    // 🔐 Hash password
+    const hashedPassword = await bcrypt.hash(cleanPass, 10);
+
     const result = await pool.query(
-      'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, phone',
-      [name, cleanPhone, email, cleanPass, area, aadhaar_number]
+      `INSERT INTO users (name, phone, email, password, area, aadhaar_number)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, phone`,
+      [name, cleanPhone, email, hashedPassword, area, aadhaar_number]
     );
 
     res.status(201).json({
-      message: "Registration Successful",
-      user: result.rows, // FIXED: Using
-      token: "dummy-token-123" 
+      message: "Registration successful",
+      user: result.rows[0],
+      token: "dummy-token-123"
     });
+
   } catch (err) {
     console.error("Registration Error:", err.message);
     res.status(500).json({ message: "Registration failed." });
   }
 });
 
-// LOGIN
+// ================= LOGIN =================
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { phone, password } = req.body;
+
     const cleanPhone = String(phone || "").trim();
     const cleanInputPass = String(password || "").trim();
 
     console.log(`Login Attempt: [${cleanPhone}]`);
 
-    const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
+    const result = await pool.query(
+      'SELECT * FROM users WHERE TRIM(phone) = $1',
+      [cleanPhone]
+    );
 
     if (result.rows.length === 0) {
       return res.status(401).json({ message: "Account not found." });
     }
 
-    const user = result.rows; // CRITICAL FIX: Changed from result.rows to result.rows
-    
-    const dbPassword = String(user.password || "").replace(/\s+/g, '');
-    const finalInputPass = cleanInputPass.replace(/\s+/g, '');
+    // ✅ FIXED HERE
+    const user = result.rows[0];
 
-    console.log(`Comparison: DB [${dbPassword}] vs Input [${finalInputPass}]`);
+    console.log(`DB Password Hash: ${user.password}`);
 
-    if (dbPassword !== finalInputPass) {
+    // 🔐 Compare hashed password
+    const isMatch = await bcrypt.compare(cleanInputPass, user.password);
+
+    if (!isMatch) {
       return res.status(401).json({ message: "Incorrect password." });
     }
 
@@ -151,14 +169,20 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+// ================= ALERTS =================
 app.get('/api/alerts/active', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM emergency_alerts ORDER BY created_at DESC');
+    const result = await pool.query(
+      'SELECT * FROM emergency_alerts ORDER BY created_at DESC'
+    );
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// ================= START SERVER =================
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
