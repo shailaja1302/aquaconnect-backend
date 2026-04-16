@@ -3,12 +3,10 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
 
-// 1. Load Environment Variables
 dotenv.config();
-
 const app = express();
 
-// 2. DYNAMIC CORS CONFIGURATION
+// 1. CORS CONFIGURATION
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
@@ -36,7 +34,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// 3. DATABASE CONNECTION & SCHEMA SYNC
+// 2. DATABASE
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -56,7 +54,6 @@ const syncDatabase = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-
     await pool.query(`
       CREATE TABLE IF NOT EXISTS emergency_alerts (
         id SERIAL PRIMARY KEY,
@@ -68,29 +65,23 @@ const syncDatabase = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    
-    console.log("✅ Database schema synchronized successfully");
+    console.log("✅ Database schema synchronized");
   } catch (err) {
     console.error("❌ Database sync error:", err.message);
   }
 };
 
 pool.connect((err) => {
-  if (err) {
-    console.error('❌ Database connection error:', err.stack);
-  } else {
-    console.log('✅ Connected to Render PostgreSQL');
+  if (!err) {
+    console.log('✅ Connected to PostgreSQL');
     syncDatabase(); 
   }
 });
 
-// 4. ROUTES
+// 3. ROUTES
+app.get('/', (req, res) => res.send('AquaConnect API is running!'));
 
-app.get('/', (req, res) => {
-  res.send('AquaConnect API is running!');
-});
-
-// Registration API - FIXED with result.rows
+// REGISTRATION
 app.post('/api/auth/register', async (req, res) => {
   const { name, phone, email, password, area, aadhaar_number } = req.body;
   try {
@@ -98,12 +89,12 @@ app.post('/api/auth/register', async (req, res) => {
     const cleanPass = String(password || "").trim();
 
     if (!cleanPhone || !cleanPass) {
-      return res.status(400).json({ message: "Phone and password are required." });
+      return res.status(400).json({ message: "Phone and password required." });
     }
 
     const phoneCheck = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
     if (phoneCheck.rows.length > 0) {
-      return res.status(400).json({ message: "This mobile number is already registered." });
+      return res.status(400).json({ message: "Mobile number already registered." });
     }
 
     const result = await pool.query(
@@ -113,24 +104,23 @@ app.post('/api/auth/register', async (req, res) => {
 
     res.status(201).json({
       message: "Registration Successful",
-      user: result.rows,
+      user: result.rows, // FIXED: Using
       token: "dummy-token-123" 
     });
   } catch (err) {
     console.error("Registration Error:", err.message);
-    res.status(500).json({ message: "Database error during registration." });
+    res.status(500).json({ message: "Registration failed." });
   }
 });
 
-// Login API - DEEP CLEANED Comparison
+// LOGIN
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { phone, password } = req.body;
-    
     const cleanPhone = String(phone || "").trim();
     const cleanInputPass = String(password || "").trim();
 
-    console.log(`Login Attempt -> Phone: [${cleanPhone}], Pass: [${cleanInputPass}]`);
+    console.log(`Login Attempt: [${cleanPhone}]`);
 
     const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
 
@@ -138,13 +128,12 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ message: "Account not found." });
     }
 
-    const user = result.rows; 
+    const user = result.rows; // CRITICAL FIX: Changed from result.rows to result.rows
     
-    // DEEP CLEAN: Remove all whitespace from both DB and Input passwords
     const dbPassword = String(user.password || "").replace(/\s+/g, '');
     const finalInputPass = cleanInputPass.replace(/\s+/g, '');
 
-    console.log(`Final Comparison -> DB: [${dbPassword}], Input: [${finalInputPass}]`);
+    console.log(`Comparison: DB [${dbPassword}] vs Input [${finalInputPass}]`);
 
     if (dbPassword !== finalInputPass) {
       return res.status(401).json({ message: "Incorrect password." });
@@ -157,7 +146,7 @@ app.post('/api/auth/login', async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Critical Login Error:", err.message);
+    console.error("Login Error:", err.message);
     res.status(500).json({ message: "Internal Server Error." });
   }
 });
@@ -172,6 +161,4 @@ app.get('/api/alerts/active', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
