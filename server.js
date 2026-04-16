@@ -2,13 +2,34 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
+const bcrypt = require('bcrypt');
 
+// 1. Load Environment Variables
 dotenv.config();
+
 const app = express();
 
-// 1. STABLE CORS (Allows all Vercel and Local environments)
+// 2. DYNAMIC CORS CONFIGURATION
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'https://aquaconnect-frontend-jtz5flhj7-shailaja1302s-projects.vercel.app',
+  /\.vercel\.app$/
+];
+
 app.use(cors({
-  origin: '*', 
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    const isAllowed = allowedOrigins.some((allowed) => {
+      if (allowed instanceof RegExp) return allowed.test(origin);
+      return allowed === origin;
+    });
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -16,14 +37,13 @@ app.use(cors({
 
 app.use(express.json());
 
-// 2. DATABASE CONFIGURATION
+// 3. DATABASE CONNECTION & SCHEMA SYNC
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// 3. AUTO-TABLE CREATION (Ensures columns like 'password' and 'aadhaar_number' exist)
-const initDB = async () => {
+const syncDatabase = async () => {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -31,105 +51,130 @@ const initDB = async () => {
         name VARCHAR(255) NOT NULL,
         phone VARCHAR(20) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
-        email VARCHAR(255),
+        email VARCHAR(255) UNIQUE,
         area VARCHAR(100),
-        aadhaar_number VARCHAR(20),
+        aadhaar_number VARCHAR(20) UNIQUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log("✅ Database tables are ready.");
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS emergency_alerts (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        location VARCHAR(100),
+        severity VARCHAR(20),
+        alert_type VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    console.log("✅ Database schema synchronized successfully");
   } catch (err) {
-    console.error("❌ Database Init Error:", err.message);
+    // FIX: Log full error object, not just message
+    console.error("❌ Database sync error:", err);
   }
 };
-initDB();
 
-// 4. THE "CLEAN START" TOOL (Use this if you get 'Incorrect Password' again)
-// Visit: https://your-backend.onrender.com/api/admin/clear-all-users
-app.get('/api/admin/clear-all-users', async (req, res) => {
-  try {
-    await pool.query('TRUNCATE TABLE users RESTART IDENTITY');
-    res.status(200).send("🔥 Database Wiped. All 'broken' user data has been deleted.");
-  } catch (err) {
-    res.status(500).send(err.message);
+pool.connect((err) => {
+  if (err) {
+    console.error('❌ Database connection error:', err.stack);
+  } else {
+    console.log('✅ Connected to Render PostgreSQL');
+    syncDatabase();
   }
 });
 
-// 5. BUG-FREE REGISTRATION
+// 4. ROUTES
+
+app.get('/', (req, res) => {
+  res.send('AquaConnect API is running!');
+});
+
+// Registration API
 app.post('/api/auth/register', async (req, res) => {
   const { name, phone, email, password, area, aadhaar_number } = req.body;
-  
   try {
-    // Force inputs to be clean strings to avoid [object Object] or null errors
-    const safePhone = String(phone || "").trim();
-    const safePass = String(password || "").trim();
+    const cleanPhone = String(phone || "").trim();
+    const cleanPass = String(password || "").trim();
 
-    if (!safePhone || !safePass) {
+    if (!cleanPhone || !cleanPass) {
       return res.status(400).json({ message: "Phone and password are required." });
     }
 
-    // Check if user already exists
-    const checkUser = await pool.query('SELECT id FROM users WHERE phone = $1', [safePhone]);
-    if (checkUser.rows.length > 0) {
-      return res.status(400).json({ message: "Mobile number already registered." });
+    const phoneCheck = await pool.query('SELECT id FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
+    if (phoneCheck.rows.length > 0) {
+      return res.status(400).json({ message: "This mobile number is already registered." });
     }
 
-    // Insert user - EXPLICIT mapping of values to columns
+    // FIX: Hash password before storing
+    const hashedPassword = await bcrypt.hash(cleanPass, 10);
+
     const result = await pool.query(
       'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, phone',
-      [name, safePhone, email, safePass, area, aadhaar_number]
+      [name, cleanPhone, email, hashedPassword, area, aadhaar_number]
     );
 
+    // FIX: result.rows[0] not result.rows
     res.status(201).json({
       message: "Registration Successful",
-      user: result.rows // Correctly accessing the single user object
+      user: result.rows[0],
+      token: "dummy-token-123"
     });
   } catch (err) {
-    console.error("Reg Error:", err.message);
-    res.status(500).json({ message: "Error creating account." });
+    console.error("Registration Error:", err);
+    res.status(500).json({ message: "Database error during registration.", detail: err.message });
   }
 });
 
-// 6. BUG-FREE LOGIN
+// Login API
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { phone, password } = req.body;
-    const inputPhone = String(phone || "").trim();
-    const inputPass = String(password || "").trim();
 
-    // Query database for the user
-    const result = await pool.query('SELECT * FROM users WHERE phone = $1', [inputPhone]);
+    const cleanPhone = String(phone || "").trim();
+    const cleanInputPass = String(password || "").trim();
+
+    console.log(`Login Attempt -> Phone: [${cleanPhone}]`);
+
+    const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
 
     if (result.rows.length === 0) {
       return res.status(401).json({ message: "Account not found." });
     }
 
-    const user = result.rows; // Accessing the first user in the array
+    // FIX: result.rows[0] not result.rows (was treating array as object)
+    const user = result.rows[0];
 
-    // Double-check comparison by stripping all whitespace
-    const dbPass = String(user.password || "").trim();
-    const loginPass = inputPass.trim();
-
-    console.log(`Login Debug: Phone [${inputPhone}] | DB Pass [${dbPass}] | Input Pass [${loginPass}]`);
-
-    if (dbPass !== loginPass) {
+    // FIX: Use bcrypt.compare instead of plain string comparison
+    const passwordMatch = await bcrypt.compare(cleanInputPass, user.password);
+    if (!passwordMatch) {
       return res.status(401).json({ message: "Incorrect password." });
     }
 
     res.status(200).json({
       message: "Login successful",
       user: { id: user.id, name: user.name, phone: user.phone },
-      token: "aqua-secure-session-999"
+      token: "dummy-token-123"
     });
 
   } catch (err) {
-    console.error("Login Error:", err.message);
-    res.status(500).json({ message: "Internal Server Error" });
+    console.error("Critical Login Error:", err);
+    res.status(500).json({ message: "Internal Server Error.", detail: err.message });
   }
 });
 
-// 7. START SERVER
+app.get('/api/alerts/active', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM emergency_alerts ORDER BY created_at DESC');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`🚀 AquaConnect Backend is live on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
