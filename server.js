@@ -3,9 +3,12 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
 
+// 1. Load Environment Variables
 dotenv.config();
+
 const app = express();
 
+// 2. DYNAMIC CORS CONFIGURATION
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
@@ -33,6 +36,7 @@ app.use(cors({
 
 app.use(express.json());
 
+// 3. DATABASE CONNECTION & SCHEMA SYNC
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -52,6 +56,7 @@ const syncDatabase = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS emergency_alerts (
         id SERIAL PRIMARY KEY,
@@ -63,6 +68,7 @@ const syncDatabase = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+    
     console.log("✅ Database schema synchronized successfully");
   } catch (err) {
     console.error("❌ Database sync error:", err.message);
@@ -70,23 +76,26 @@ const syncDatabase = async () => {
 };
 
 pool.connect((err) => {
-  if (!err) {
+  if (err) {
+    console.error('❌ Database connection error:', err.stack);
+  } else {
     console.log('✅ Connected to Render PostgreSQL');
     syncDatabase(); 
   }
 });
 
+// 4. ROUTES
+
 app.get('/', (req, res) => {
   res.send('AquaConnect API is running!');
 });
 
-// FIXED REGISTRATION
+// Registration API - FIXED with result.rows
 app.post('/api/auth/register', async (req, res) => {
   const { name, phone, email, password, area, aadhaar_number } = req.body;
   try {
     const cleanPhone = String(phone || "").trim();
     const cleanPass = String(password || "").trim();
-    const cleanEmail = email ? String(email).trim().toLowerCase() : null;
 
     if (!cleanPhone || !cleanPass) {
       return res.status(400).json({ message: "Phone and password are required." });
@@ -99,12 +108,12 @@ app.post('/api/auth/register', async (req, res) => {
 
     const result = await pool.query(
       'INSERT INTO users (name, phone, email, password, area, aadhaar_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, phone',
-      [name, cleanPhone, cleanEmail, cleanPass, area, aadhaar_number]
+      [name, cleanPhone, email, cleanPass, area, aadhaar_number]
     );
 
     res.status(201).json({
       message: "Registration Successful",
-      user: result.rows, // FIXED: Using
+      user: result.rows,
       token: "dummy-token-123" 
     });
   } catch (err) {
@@ -113,18 +122,15 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// FIXED LOGIN
+// Login API - DEEP CLEANED Comparison
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const incomingPhone = req.body.phone;
-    const incomingPass = req.body.password;
+    const { phone, password } = req.body;
+    
+    const cleanPhone = String(phone || "").trim();
+    const cleanInputPass = String(password || "").trim();
 
-    if (!incomingPhone || !incomingPass) {
-      return res.status(400).json({ message: "Data missing from request." });
-    }
-
-    const cleanPhone = String(incomingPhone).trim();
-    const cleanPass = String(incomingPass).trim();
+    console.log(`Login Attempt -> Phone: [${cleanPhone}], Pass: [${cleanInputPass}]`);
 
     const result = await pool.query('SELECT * FROM users WHERE TRIM(phone) = $1', [cleanPhone]);
 
@@ -132,10 +138,15 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ message: "Account not found." });
     }
 
-    const user = result.rows; // CRITICAL FIX: Added
-    const dbPassword = String(user.password || "").trim();
+    const user = result.rows; 
+    
+    // DEEP CLEAN: Remove all whitespace from both DB and Input passwords
+    const dbPassword = String(user.password || "").replace(/\s+/g, '');
+    const finalInputPass = cleanInputPass.replace(/\s+/g, '');
 
-    if (dbPassword !== cleanPass) {
+    console.log(`Final Comparison -> DB: [${dbPassword}], Input: [${finalInputPass}]`);
+
+    if (dbPassword !== finalInputPass) {
       return res.status(401).json({ message: "Incorrect password." });
     }
 
